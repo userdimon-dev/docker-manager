@@ -1,0 +1,18 @@
+﻿# Временные файлы
+*.tmp
+*.temp
+*.log
+*.pid
+*.lock
+
+# Кэш
+.cache/
+*.pyc
+
+# Файлы окружения
+.env
+.env.local
+
+# Мусор
+.DS_Store
+Thumbs.db
