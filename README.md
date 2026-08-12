@@ -20,17 +20,17 @@
 
 ### Одна команда (интерактивное меню):
 ```bash
-curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/main/docker-manager.sh | sudo bash
+curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/docker-manager.sh | sudo bash
 ```
 
 ### Установка без меню:
 ```bash
-curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/main/docker-manager.sh | sudo bash -s -- --install
+curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/docker-manager.sh | sudo bash -s -- --install
 ```
 
 ### Скачать и запустить вручную:
 ```bash
-wget https://raw.githubusercontent.com/userdimon-dev/docker-manager/main/docker-manager.sh
+wget https://raw.githubusercontent.com/userdimon-dev/docker-manager/docker-manager.sh
 chmod +x docker-manager.sh
 sudo ./docker-manager.sh
 ```
@@ -133,7 +133,7 @@ docker-manager/
 Для обновления скрипта достаточно загрузить последнюю версию:
 
 ```bash
-sudo curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/main/docker-manager.sh -o /tmp/docker-manager.sh
+sudo curl -sSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/docker-manager.sh -o /tmp/docker-manager.sh
 sudo chmod +x /tmp/docker-manager.sh
 sudo /tmp/docker-manager.sh
 ```
