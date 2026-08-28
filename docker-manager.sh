@@ -124,7 +124,7 @@ install_docker_debian() {
     apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
     
     print_info "Добавление GPG-ключа Docker..."
-    curl -fsSL https://download.docker.com/linux/${DISTRO_ID}/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    curl -fsSL https://download.docker.com/linux/${DISTRO_ID}/gpg | gpg --yes --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
     
     print_info "Добавление репозитория Docker..."
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/${DISTRO_ID} $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -202,8 +202,8 @@ install_docker() {
         esac
         
         # Добавляем пользователя в группу docker
-        if id "$SUDO_USER" &>/dev/null; then
-            usermod -aG docker $SUDO_USER
+        if [[ -n "$SUDO_USER" ]] && id "$SUDO_USER" &>/dev/null; then
+            usermod -aG docker "$SUDO_USER"
             print_message "Пользователь ${SUDO_USER} добавлен в группу docker"
             print_warning "Перезайдите в SSH (или выполните 'newgrp docker') для применения"
         fi
@@ -360,14 +360,16 @@ check_docker() {
         print_warning "Docker Compose не установлен"
     fi
     
-    if id -nG "$SUDO_USER" 2>/dev/null | grep -qw docker; then
-        print_message "Пользователь ${SUDO_USER} в группе docker"
-    else
-        print_warning "Пользователь ${SUDO_USER} НЕ в группе docker"
-        echo ""
-        echo -e "${YELLOW}Для добавления:${NC}"
-        echo "  sudo usermod -aG docker $SUDO_USER"
-        echo "  newgrp docker"
+    if [[ -n "$SUDO_USER" ]]; then
+        if id -nG "$SUDO_USER" 2>/dev/null | grep -qw docker; then
+            print_message "Пользователь ${SUDO_USER} в группе docker"
+        else
+            print_warning "Пользователь ${SUDO_USER} НЕ в группе docker"
+            echo ""
+            echo -e "${YELLOW}Для добавления:${NC}"
+            echo "  sudo usermod -aG docker $SUDO_USER"
+            echo "  newgrp docker"
+        fi
     fi
     
     if systemctl is-active docker &> /dev/null; then
