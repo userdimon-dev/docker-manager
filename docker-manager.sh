@@ -110,6 +110,14 @@ get_docker_status() {
         COMPOSE_INSTALLED=false
         COMPOSE_VERSION=""
     fi
+    
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^remnanode$"; then
+        REMNANODE_STATUS="работает"
+    elif [ -d "/opt/remnanode" ]; then
+        REMNANODE_STATUS="остановлена"
+    else
+        REMNANODE_STATUS="не установлена"
+    fi
 }
 
 # ============================================================
@@ -488,6 +496,21 @@ show_stats() {
 }
 
 # ============================================================
+# Управление RemnaNode (VPN)
+# ============================================================
+manage_remnanode() {
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$script_dir/remnanode.sh" ]; then
+        bash "$script_dir/remnanode.sh"
+    else
+        print_info "Загрузка скрипта RemnaNode из репозитория..."
+        curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/master/remnanode.sh -o /tmp/remnanode.sh
+        chmod +x /tmp/remnanode.sh
+        bash /tmp/remnanode.sh
+    fi
+}
+
+# ============================================================
 # Главное меню
 # ============================================================
 show_main_menu() {
@@ -508,6 +531,12 @@ show_main_menu() {
         else
             echo -e "  ${RED}●${NC} Compose:   не установлен"
         fi
+
+        if [ "$REMNANODE_STATUS" = "работает" ]; then
+            echo -e "  ${GREEN}●${NC} RemnaNode: установлена (работает)"
+        elif [ "$REMNANODE_STATUS" = "остановлена" ]; then
+            echo -e "  ${YELLOW}●${NC} RemnaNode: установлена (остановлена)"
+        fi
         
         echo ""
         echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -520,10 +549,11 @@ show_main_menu() {
         echo -e "  ${YELLOW}4)${NC} 🧪 Полное тестирование"
         echo -e "  ${BLUE}5)${NC} ⚙️  Дополнительные настройки"
         echo -e "  ${BLUE}6)${NC} 📊 Статистика Docker"
+        echo -e "  ${PURPLE}7)${NC} 🌐 Управление RemnaNode (VPN)"
         echo -e "  ${RED}0)${NC} 🚪 Выход"
         echo ""
         
-        read -p "Выберите действие [0-6]: " choice
+        read -p "Выберите действие [0-7]: " choice
         
         case $choice in
             1)
@@ -548,6 +578,10 @@ show_main_menu() {
                 ;;
             6)
                 show_stats
+                read -p "Нажмите Enter чтобы продолжить..."
+                ;;
+            7)
+                manage_remnanode
                 read -p "Нажмите Enter чтобы продолжить..."
                 ;;
             0)
@@ -587,6 +621,10 @@ handle_args() {
             full_test
             exit 0
             ;;
+        --remnanode|-r)
+            manage_remnanode
+            exit $?
+            ;;
         --help|-h)
             print_header
             echo "Использование: $0 [опция]"
@@ -596,6 +634,7 @@ handle_args() {
             echo "  -u, --uninstall   Удалить Docker"
             echo "  -c, --check       Проверить установку"
             echo "  -t, --test        Полное тестирование"
+            echo "  -r, --remnanode   Управление нодой RemnaNode (VPN)"
             echo "  -h, --help        Показать эту справку"
             echo ""
             echo "Без аргументов: интерактивное меню"

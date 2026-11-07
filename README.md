@@ -15,6 +15,7 @@
 - 🧪 **Протестировать** работоспособность
 - ⚙️ **Настроить** (автозапуск, логи, прокси)
 - 📊 **Показать статистику** использования Docker
+- 🌐 **Развернуть RemnaNode** — ноду для панели управления VPN Remnawave
 
 ## 🚀 Быстрый старт
 
@@ -55,6 +56,7 @@ sudo ./docker-manager.sh
 | `sudo ./docker-manager.sh -u` | Удалить Docker |
 | `sudo ./docker-manager.sh -c` | Проверить установку |
 | `sudo ./docker-manager.sh -t` | Полное тестирование |
+| `sudo ./docker-manager.sh -r` | Управление RemnaNode (VPN) |
 | `sudo ./docker-manager.sh -h` | Показать справку |
 
 ## 🎮 Интерактивное меню
@@ -70,6 +72,7 @@ sudo ./docker-manager.sh
   Система: Ubuntu 22.04
   ● Docker:    установлен (24.0.7)
   ● Compose:   установлен (2.23.0)
+  ● RemnaNode: установлена (работает)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Основные операции
@@ -81,9 +84,10 @@ sudo ./docker-manager.sh
   4) 🧪 Полное тестирование
   5) ⚙️  Дополнительные настройки
   6) 📊 Статистика Docker
+  7) 🌐 Управление RemnaNode (VPN)
   0) 🚪 Выход
 
-Выберите действие [0-6]: _
+Выберите действие [0-7]: _
 ```
 
 ## ⚙️ Дополнительные настройки
@@ -118,12 +122,47 @@ sudo ./docker-manager.sh
 - Данные Docker удаляются только с согласия
 - Русскоязычный интерфейс для удобства
 
+## 🌐 RemnaNode — Установка ноды для Remnawave
+
+Скрипт [`remnanode.sh`](remnanode.sh) позволяет в пару команд развернуть рабочую ноду для панели управления VPN **Remnawave**:
+
+### Быстрый запуск в одну команду:
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/master/remnanode.sh)"
+```
+
+### Неинтерактивная установка (для быстрой раскатки нескольких серверов):
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docker-manager/master/remnanode.sh)" -- -k "ВАШ_SECRET_KEY" -p 2222 --panel-ip 1.2.3.4
+```
+
+### Параметры `remnanode.sh`:
+| Флаг | Описание |
+|------|----------|
+| `-k, --key KEY` | Секретный ключ (Secret Key) из панели Remnawave |
+| `-p, --port PORT` | Порт связи с панелью (по умолчанию: `2222`) |
+| `--panel-ip IP` | IP адрес панели (автоматически добавляет защитное правило в UFW) |
+| `-d, --dir DIR` | Каталог установки (по умолчанию: `/opt/remnanode`) |
+| `--status` | Проверить статус и логи контейнера |
+| `--logs` | Просмотр логов в реальном времени (`docker compose logs -f`) |
+| `--restart` | Перезапустить контейнер ноды |
+| `--update` | Обновить образ ноды до последней версии |
+| `--uninstall` | Полное удаление ноды с сервера |
+
+### Что делает скрипт RemnaNode:
+1. Проверяет наличие Docker и Docker Compose (при отсутствии предлагает установить в 1 клик).
+2. Оптимизирует системные параметры ядра Linux для работы VPN (`net.ipv4.ip_forward = 1`, BBR, увеличенные сетевые буферы).
+3. Создаёт безопасный `docker-compose.yml` в `/opt/remnanode/` с режимом `network_mode: host` и ротацией логов.
+4. При наличии активного UFW фаервола открывает порт API только для IP вашей панели.
+5. Запускает контейнер `remnawave/node:latest` и выводит стартовые логи для проверки подключения.
+
 ## 📁 Структура проекта
 
 ```
 docker-manager/
-├── docker-manager.sh    # Основной скрипт
-├── README.md            # Этот файл
+├── docker-manager.sh    # Основной скрипт управления Docker
+├── remnanode.sh         # Скрипт быстрой установки и настройки RemnaNode (VPN)
+├── README.md            # Документация проекта
 ├── LICENSE              # Лицензия MIT
 └── .gitignore           # Исключения git
 ```
