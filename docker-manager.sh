@@ -745,6 +745,248 @@ run_speedtest() {
 }
 
 # ============================================================
+# Вспомогательная функция определения SSH порта
+# ============================================================
+get_ssh_port() {
+    local ssh_port=""
+    if command -v sshd &>/dev/null; then
+        ssh_port=$(sshd -T 2>/dev/null | grep '^port ' | awk '{print $2}' | head -n 1)
+    fi
+    if [ -z "$ssh_port" ] && [ -f /etc/ssh/sshd_config ]; then
+        ssh_port=$(grep -E '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config | awk '{print $2}' | head -n 1)
+    fi
+    echo "${ssh_port:-22}"
+}
+
+# ============================================================
+# Настройка UFW фаервола
+# ============================================================
+setup_ufw() {
+    print_menu_title "🛡️ Настройка файрвола UFW"
+
+    if ! command -v ufw &>/dev/null; then
+        print_info "Установка UFW..."
+        case $DISTRO_ID in
+            ubuntu|debian) apt-get update -qq && apt-get install -y ufw ;;
+            rhel|centos|fedora) yum install -y ufw 2>/dev/null || dnf install -y ufw 2>/dev/null ;;
+            arch) pacman -S --noconfirm ufw ;;
+            *) print_error "Не удалось автоматически установить UFW для $DISTRO_NAME" ;;
+        esac
+    fi
+
+    if ! command -v ufw &>/dev/null; then
+        print_error "UFW не установлен в системе."
+        return 1
+    fi
+
+    local ssh_port=$(get_ssh_port)
+    print_info "Определён порт SSH: ${CYAN}${ssh_port}/tcp${NC}"
+
+    # Обязательно разрешаем SSH ПЕРЕД включением
+    print_info "Добавление защитного правила для SSH (порт ${ssh_port})..."
+    ufw allow "${ssh_port}/tcp" comment "SSH Access" >/dev/null
+
+    # Разрешаем routed трафик для Docker и VPN
+    print_info "Настройка маршрутизации (FORWARD) для Docker/VPN..."
+    ufw default allow routed >/dev/null
+
+    # Проверяем RemnaNode порт если есть сохранённый конфиг
+    if [ -f "/opt/remnanode/.remnanode.env" ]; then
+        local node_port=$(grep "^NODE_PORT=" /opt/remnanode/.remnanode.env | cut -d'=' -f2)
+        local panel_ip=$(grep "^PANEL_IP=" /opt/remnanode/.remnanode.env | cut -d'=' -f2)
+        if [ -n "$node_port" ]; then
+            if [ -n "$panel_ip" ]; then
+                ufw allow from "$panel_ip" to any port "$node_port" proto tcp comment "Remnawave Panel" >/dev/null
+                print_message "Открыт порт ноды $node_port только для IP панели: $panel_ip"
+            else
+                ufw allow "$node_port"/tcp comment "Remnawave Node API" >/dev/null
+                print_message "Открыт порт ноды $node_port/tcp"
+            fi
+        fi
+    fi
+
+    echo ""
+    read -p "Включить UFW сейчас? [Y/n]: " enable_confirm
+    enable_confirm=${enable_confirm:-Y}
+    case ${enable_confirm:0:1} in
+        y|Y)
+            ufw --force enable
+            print_success "UFW успешно включён и настроен!"
+            echo ""
+            ufw status verbose
+            ;;
+        *)
+            print_warning "Включение UFW отложено."
+            ;;
+    esac
+}
+
+# ============================================================
+# Установка и управление Traffic-Guard (anti-scanner)
+# ============================================================
+setup_traffic_guard() {
+    print_menu_title "🛡️ Установка и управление Traffic-Guard"
+
+    echo -e "Traffic-Guard — Go-утилита для блокировки сканеров портов (anti-scanner)"
+    echo -e "и автоматического бана подозрительных IP через iptables/ipset."
+    echo -e "Репозиторий: ${CYAN}https://github.com/dotX12/traffic-guard${NC}"
+    echo ""
+
+    local is_installed=false
+    if command -v traffic-guard &>/dev/null; then
+        is_installed=true
+    fi
+
+    if $is_installed; then
+        echo -e "Статус: ${GREEN}● Установлен${NC}"
+        echo ""
+        echo "1) Проверить статус службы"
+        echo "2) Просмотреть логи (journalctl -u traffic-guard)"
+        echo "3) Перезапустить службу"
+        echo "4) Обновить Traffic-Guard до последней версии"
+        echo "5) Удалить Traffic-Guard"
+        echo "0) Назад"
+        echo ""
+        read -p "Выберите действие [0-5]: " tg_choice
+
+        case $tg_choice in
+            1)
+                systemctl status traffic-guard --no-pager
+                ;;
+            2)
+                journalctl -u traffic-guard -n 35 --no-pager
+                ;;
+            3)
+                systemctl restart traffic-guard
+                print_success "Служба traffic-guard перезапущена!"
+                ;;
+            4)
+                print_info "Обновление Traffic-Guard..."
+                curl -fsSL https://raw.githubusercontent.com/dotX12/traffic-guard/master/install.sh | bash
+                systemctl restart traffic-guard 2>/dev/null || true
+                print_success "Traffic-Guard обновлён!"
+                ;;
+            5)
+                print_info "Остановка и удаление Traffic-Guard..."
+                systemctl stop traffic-guard 2>/dev/null || true
+                systemctl disable traffic-guard 2>/dev/null || true
+                rm -f /usr/local/bin/traffic-guard /etc/systemd/system/traffic-guard.service
+                systemctl daemon-reload
+                print_success "Traffic-Guard удалён!"
+                ;;
+            0) return 0 ;;
+            *) print_error "Неверный выбор" ;;
+        esac
+    else
+        echo -e "Статус: ${YELLOW}○ Не установлен${NC}"
+        echo ""
+        read -p "Установить Traffic-Guard сейчас? [Y/n]: " install_tg
+        install_tg=${install_tg:-Y}
+        case ${install_tg:0:1} in
+            y|Y)
+                print_info "Установка зависимостей (ipset, iptables, curl)..."
+                case $DISTRO_ID in
+                    ubuntu|debian)
+                        apt-get update -qq
+                        apt-get install -y ipset iptables curl
+                        ;;
+                    rhel|centos|fedora)
+                        yum install -y ipset iptables curl 2>/dev/null || dnf install -y ipset iptables curl 2>/dev/null
+                        ;;
+                    arch)
+                        pacman -S --noconfirm ipset iptables curl
+                        ;;
+                esac
+
+                print_info "Загрузка и установка Traffic-Guard из официального репозитория..."
+                curl -fsSL https://raw.githubusercontent.com/dotX12/traffic-guard/master/install.sh | bash
+
+                if command -v traffic-guard &>/dev/null; then
+                    systemctl enable --now traffic-guard 2>/dev/null || true
+                    print_success "Traffic-Guard успешно установлен и запущен как служба!"
+                    systemctl status traffic-guard --no-pager || true
+                else
+                    print_error "Ошибка установки Traffic-Guard."
+                fi
+                ;;
+            *)
+                print_info "Установка отменена."
+                ;;
+        esac
+    fi
+}
+
+# ============================================================
+# Меню безопасности
+# ============================================================
+manage_security() {
+    while true; do
+        print_menu_title "🛡️ Безопасность сервера (UFW + Traffic-Guard)"
+
+        local ufw_status="не активен"
+        if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+            ufw_status="${GREEN}активен${NC}"
+        else
+            ufw_status="${RED}не активен / не установлен${NC}"
+        fi
+
+        local tg_status="не установлен"
+        if command -v traffic-guard &>/dev/null; then
+            if systemctl is-active --quiet traffic-guard 2>/dev/null; then
+                tg_status="${GREEN}работает${NC}"
+            else
+                tg_status="${YELLOW}остановлен${NC}"
+            fi
+        fi
+
+        echo -e "  ● Фаервол UFW:       $ufw_status"
+        echo -e "  ● Traffic-Guard:     $tg_status"
+        echo -e "  ● Текущий SSH порт:  ${CYAN}$(get_ssh_port)/tcp${NC}"
+        echo ""
+        echo "1) Настроить и включить UFW (с авто-разрешением SSH)"
+        echo "2) Установить / Управлять Traffic-Guard (anti-scanner)"
+        echo "3) Просмотреть статус UFW правил"
+        echo "4) Отключить UFW"
+        echo "0) Назад в главное меню"
+        echo ""
+
+        read -p "Выберите действие [0-4]: " sec_choice
+        case $sec_choice in
+            1)
+                setup_ufw
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            2)
+                setup_traffic_guard
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            3)
+                if command -v ufw &>/dev/null; then
+                    ufw status verbose
+                else
+                    print_warning "UFW не установлен"
+                fi
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            4)
+                if command -v ufw &>/dev/null; then
+                    ufw disable
+                    print_warning "UFW отключён!"
+                fi
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            0)
+                return 0
+                ;;
+            *)
+                print_error "Неверный выбор"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ============================================================
 # Главное меню
 # ============================================================
 show_main_menu() {
@@ -787,10 +1029,11 @@ show_main_menu() {
         echo -e "  ${PURPLE}8)${NC} 💾 Управление Swap-файлом"
         echo -e "  ${PURPLE}9)${NC} 🚀 Оптимизация ulimits (nofile 1048576)"
         echo -e "  ${GREEN}10)${NC} ⚡ Тест скорости сети и диагностика IP"
+        echo -e "  ${PURPLE}11)${NC} 🛡️  Безопасность сервера (UFW + Traffic-Guard)"
         echo -e "  ${RED}0)${NC} 🚪 Выход"
         echo ""
         
-        read -p "Выберите действие [0-10]: " choice
+        read -p "Выберите действие [0-11]: " choice
         
         case $choice in
             1)
@@ -832,6 +1075,9 @@ show_main_menu() {
             10)
                 run_speedtest
                 read -p "Нажмите Enter чтобы продолжить..."
+                ;;
+            11)
+                manage_security
                 ;;
             0)
                 print_message "До свидания!"
@@ -886,6 +1132,18 @@ handle_args() {
             run_speedtest
             exit 0
             ;;
+        --security)
+            manage_security
+            exit 0
+            ;;
+        --ufw)
+            setup_ufw
+            exit 0
+            ;;
+        --traffic-guard)
+            setup_traffic_guard
+            exit 0
+            ;;
         --help|-h)
             print_header
             echo "Использование: $0 [опция]"
@@ -899,6 +1157,9 @@ handle_args() {
             echo "  --swap            Управление Swap-файлом"
             echo "  --tune            Оптимизация лимитов дескрипторов (nofile)"
             echo "  --speedtest       Тест скорости сети и диагностика IP"
+            echo "  --security        Меню управления безопасностью (UFW + Traffic-Guard)"
+            echo "  --ufw             Настройка и включение UFW"
+            echo "  --traffic-guard   Установка/управление Traffic-Guard"
             echo "  -h, --help        Показать эту справку"
             echo ""
             echo "Без аргументов: интерактивное меню"

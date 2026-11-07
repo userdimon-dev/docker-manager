@@ -60,6 +60,9 @@ sudo ./docker-manager.sh
 | `sudo ./docker-manager.sh --swap` | Управление Swap-файлом |
 | `sudo ./docker-manager.sh --tune` | Оптимизация ulimits (1048576) и BBR |
 | `sudo ./docker-manager.sh --speedtest` | Тест скорости сети и диагностика IP |
+| `sudo ./docker-manager.sh --security` | Меню безопасности (UFW + Traffic-Guard) |
+| `sudo ./docker-manager.sh --ufw` | Настройка и включение UFW (с защитой SSH) |
+| `sudo ./docker-manager.sh --traffic-guard` | Установка/управление Traffic-Guard |
 | `sudo ./docker-manager.sh -h` | Показать справку |
 
 ## 🎮 Интерактивное меню
@@ -91,9 +94,10 @@ sudo ./docker-manager.sh
   8) 💾 Управление Swap-файлом
   9) 🚀 Оптимизация ulimits (nofile 1048576)
   10) ⚡ Тест скорости сети и диагностика IP
+  11) 🛡️  Безопасность сервера (UFW + Traffic-Guard)
   0) 🚪 Выход
 
-Выберите действие [0-10]: _
+Выберите действие [0-11]: _
 ```
 
 ## ⚙️ Дополнительные настройки
@@ -157,6 +161,9 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docke
 | `--swap [SIZE]` | Создать Swap-файл заданного размера в GB (по умолчанию 2GB) |
 | `--tune` | Оптимизировать лимиты файловых дескрипторов (1048576) и BBR |
 | `--speedtest` | Тест скорости сети (Ookla Speedtest / Cloudflare CDN) и геолокация IP |
+| `--security` | Меню безопасности (UFW + Traffic-Guard) |
+| `--ufw` | Настроить и включить UFW (с защитой SSH и роутингом Docker/VPN) |
+| `--traffic-guard` | Установить / обновить службу Traffic-Guard |
 
 ### Что делает скрипт RemnaNode:
 1. Проверяет наличие Docker и Docker Compose (при отсутствии предлагает установить в 1 клик).
@@ -167,6 +174,21 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docke
 6. При наличии активного UFW фаервола открывает порт API только для IP вашей панели.
 7. Запускает контейнер `remnawave/node:latest` и выводит стартовые логи для проверки подключения.
 8. Предоставляет встроенный тест скорости канала и пинга до Cloudflare, Google DNS и Telegram DC.
+9. Включает модуль безопасности: настройку UFW с защитой от блокировки SSH и установку [Traffic-Guard](https://github.com/dotX12/traffic-guard) для защиты ноды от сканеров портов.
+
+## 🛡️ Безопасность сервера (UFW + Traffic-Guard)
+
+Скрипты включают инструменты для защиты вашей VPN-инфраструктуры:
+
+### 1. UFW Firewall
+* **Защита от случайной блокировки SSH:** скрипт автоматически считывает текущий рабочий порт SSH (из `sshd_config` или процесса `sshd`) и открывает его **до** включения фаервола.
+* **Поддержка Docker и VPN:** включает `ufw default allow routed` для корректной маршрутизации входящего и исходящего трафика клиентов.
+* **Защита порта ноды:** если в `/opt/remnanode/` указан IP панели, порт ноды открывается только для этого IP.
+
+### 2. Traffic-Guard (Anti-Scanner)
+* Утилита от [dotX12/traffic-guard](https://github.com/dotX12/traffic-guard) на Go.
+* Автоматически выявляет агрессивное сканирование портов (Shodan, Censys, сканеры цензуры/DPI) и банит атакующие IP на уровне ядра Linux через `iptables` и `ipset`.
+* Работает в фоне как системная служба `traffic-guard.service` с автозапуском при загрузке.
 
 ## 📁 Структура проекта
 
