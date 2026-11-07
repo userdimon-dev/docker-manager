@@ -144,6 +144,268 @@ EOF
 }
 
 # ============================================================
+# Оптимизация лимитов файловых дескрипторов (nofile ulimits)
+# ============================================================
+tune_nofile_limits() {
+    print_menu_title "🚀 Оптимизация лимитов дескрипторов (nofile)"
+    local current_limit=$(ulimit -n)
+    print_info "Текущий лимит дескрипторов сессии: ${CYAN}${current_limit}${NC}"
+    print_info "Установка лимитов (1048576) для хоста, systemd и Docker..."
+
+    mkdir -p /etc/security/limits.d
+    cat > /etc/security/limits.d/99-vpn-limits.conf <<EOF
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+* soft nproc 524288
+* hard nproc 524288
+root soft nproc 524288
+root hard nproc 524288
+EOF
+
+    if [ -f /etc/systemd/system.conf ]; then
+        sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/system.conf
+        if ! grep -q "DefaultLimitNOFILE" /etc/systemd/system.conf; then
+            echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
+        fi
+    fi
+    if [ -f /etc/systemd/user.conf ]; then
+        sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/user.conf
+        if ! grep -q "DefaultLimitNOFILE" /etc/systemd/user.conf; then
+            echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
+        fi
+    fi
+
+    cat > /etc/sysctl.d/99-file-max.conf <<EOF
+fs.file-max = 2097152
+fs.inotify.max_user_instances = 8192
+EOF
+    sysctl -p /etc/sysctl.d/99-file-max.conf >/dev/null 2>&1 || true
+
+    mkdir -p /etc/docker
+    if [ -f /etc/docker/daemon.json ]; then
+        if ! grep -q "default-ulimits" /etc/docker/daemon.json; then
+            cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+            sed -i '1s/{/{\n  "default-ulimits": {\n    "nofile": {\n      "Name": "nofile",\n      "Hard": 1048576,\n      "Soft": 1048576\n    }\n  },/' /etc/docker/daemon.json
+        fi
+    else
+        cat > /etc/docker/daemon.json <<EOF
+{
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 1048576,
+      "Soft": 1048576
+    }
+  },
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "15m",
+    "max-file": "3"
+  }
+}
+EOF
+    fi
+
+    if command -v systemctl &> /dev/null; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart docker 2>/dev/null || true
+    fi
+
+    ulimit -n 1048576 2>/dev/null || true
+    print_success "Лимиты дескрипторов увеличены до 1048576 (хост + Docker)!"
+}
+
+# ============================================================
+# Управление Swap-файлом
+# ============================================================
+manage_swap() {
+    print_menu_title "💾 Управление файлом подкачки (Swap)"
+
+    local current_swap=$(free -m | awk '/^Swap:/ {print $2}')
+    current_swap=${current_swap:-0}
+    echo -e "Текущий размер Swap: ${CYAN}${current_swap} MB${NC}"
+    echo ""
+    echo "1) Создать Swap 2 GB (рекомендуется для 1-2 GB RAM)"
+    echo "2) Создать Swap 4 GB (рекомендуется для 2-4 GB RAM)"
+    echo "3) Задать свой размер в GB"
+    echo "4) Удалить Swap файл"
+    echo "0) Назад"
+    echo ""
+    read -p "Выберите действие [0-4]: " swap_choice
+
+    local swap_size=0
+    case $swap_choice in
+        1) swap_size=2 ;;
+        2) swap_size=4 ;;
+        3)
+            read -p "Введите размер Swap в GB (например 2 или 4): " custom_size
+            if [[ "$custom_size" =~ ^[1-9][0-9]*$ ]]; then
+                swap_size=$custom_size
+            else
+                print_error "Некорректный размер"
+                return 1
+            fi
+            ;;
+        4)
+            if [ -f /swapfile ]; then
+                print_info "Отключение и удаление /swapfile..."
+                swapoff /swapfile 2>/dev/null || true
+                rm -f /swapfile
+                sed -i '/\/swapfile/d' /etc/fstab
+                print_success "Swap файл успешно удалён!"
+            else
+                print_warning "Файл /swapfile не найден."
+            fi
+            return 0
+            ;;
+        0) return 0 ;;
+        *) print_error "Неверный выбор"; return 1 ;;
+    esac
+
+    if [ "$swap_size" -gt 0 ]; then
+        create_swap "$swap_size"
+    fi
+}
+
+create_swap() {
+    local size=$1
+    if [ -f /swapfile ]; then
+        print_warning "Файл /swapfile уже существует. Пересоздаём..."
+        swapoff /swapfile 2>/dev/null || true
+        rm -f /swapfile
+        sed -i '/\/swapfile/d' /etc/fstab
+    fi
+
+    print_info "Выделение ${size}GB под /swapfile..."
+    if ! fallocate -l "${size}G" /swapfile 2>/dev/null; then
+        dd if=/dev/zero of=/swapfile bs=1M count=$((size * 1024)) status=progress
+    fi
+
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    fi
+
+    sysctl vm.swappiness=10 >/dev/null 2>&1 || true
+    sysctl vm.vfs_cache_pressure=50 >/dev/null 2>&1 || true
+
+    mkdir -p /etc/sysctl.d
+    cat > /etc/sysctl.d/99-swap.conf <<EOF
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+EOF
+
+    print_success "Swap на ${size}GB успешно создан и включён в автозагрузку!"
+}
+
+check_swap_auto() {
+    local current_swap=$(free -m | awk '/^Swap:/ {print $2}')
+    current_swap=${current_swap:-0}
+    local total_ram=$(free -m | awk '/^Mem:/ {print $2}')
+    total_ram=${total_ram:-1024}
+
+    if [ "$current_swap" -eq 0 ] && [ "$total_ram" -le 2500 ]; then
+        print_warning "На сервере ${total_ram}MB RAM и отсутствует Swap."
+        if [ "$NON_INTERACTIVE" = false ]; then
+            read -p "Создать 2GB Swap файл для предотвращения падений ноды (OOM)? [Y/n]: " create_sw
+            create_sw=${create_sw:-Y}
+            case ${create_sw:0:1} in
+                y|Y) create_swap 2 ;;
+            esac
+        else
+            create_swap 2
+        fi
+    fi
+}
+
+# ============================================================
+# Диагностика сети, локации и Speedtest
+# ============================================================
+run_speedtest() {
+    print_menu_title "🚀 Диагностика сети и тест скорости (Speedtest)"
+    
+    print_info "Определение параметров сервера и геолокации..."
+    local ip_info=$(curl -s --max-time 5 https://ipinfo.io/json 2>/dev/null || true)
+    
+    local ip="" country="" city="" org=""
+    if [ -n "$ip_info" ]; then
+        ip=$(echo "$ip_info" | grep '"ip"' | cut -d'"' -f4)
+        country=$(echo "$ip_info" | grep '"country"' | cut -d'"' -f4)
+        city=$(echo "$ip_info" | grep '"city"' | cut -d'"' -f4)
+        org=$(echo "$ip_info" | grep '"org"' | cut -d'"' -f4)
+    fi
+
+    if [ -z "$ip" ]; then
+        ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "Не удалось определить")
+    fi
+
+    echo -e "  ● Внешний IP:  ${CYAN}${ip}${NC}"
+    [ -n "$country" ] && echo -e "  ● Гео:         ${CYAN}${city}, ${country}${NC}"
+    [ -n "$org" ]     && echo -e "  ● Провайдер:   ${CYAN}${org}${NC}"
+    echo ""
+
+    print_info "Проверка задержки (Ping):"
+    for host in "1.1.1.1:Cloudflare" "8.8.8.8:Google DNS" "149.154.167.51:Telegram DC"; do
+        local ip_addr="${host%%:*}"
+        local name="${host##*:}"
+        local ping_res=$(ping -c 3 -W 2 "$ip_addr" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        if [ -n "$ping_res" ]; then
+            echo -e "  ● $name ($ip_addr): ${GREEN}${ping_res} ms${NC}"
+        else
+            echo -e "  ● $name ($ip_addr): ${YELLOW}не отвечает / тайм-аут${NC}"
+        fi
+    done
+    echo ""
+
+    print_info "Запуск теста скорости канала..."
+    if command -v speedtest &> /dev/null; then
+        speedtest --accept-license --accept-gdpr 2>/dev/null || speedtest
+    elif command -v speedtest-cli &> /dev/null; then
+        speedtest-cli --simple
+    else
+        print_info "Утилита Speedtest не установлена."
+        local install_st="Y"
+        if [ "$NON_INTERACTIVE" = false ]; then
+            read -p "Установить официальный Ookla Speedtest CLI для точного замера? [Y/n]: " user_st
+            install_st=${user_st:-Y}
+        fi
+
+        case ${install_st:0:1} in
+            y|Y)
+                print_info "Загрузка Ookla Speedtest..."
+                local arch=$(uname -m)
+                local st_url=""
+                case $arch in
+                    x86_64) st_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz" ;;
+                    aarch64|arm64) st_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz" ;;
+                esac
+                
+                if [ -n "$st_url" ]; then
+                    curl -sL "$st_url" | tar -xz -C /usr/local/bin speedtest 2>/dev/null || true
+                    chmod +x /usr/local/bin/speedtest 2>/dev/null || true
+                fi
+
+                if command -v speedtest &> /dev/null; then
+                    speedtest --accept-license --accept-gdpr
+                else
+                    print_info "Тест скорости скачивания через Cloudflare CDN (100MB)..."
+                    curl -o /dev/null -w "Скорость скачивания: %{speed_download} байт/сек\nВремя: %{time_total} сек\n" https://speed.cloudflare.com/__down?bytes=104857600
+                fi
+                ;;
+            *)
+                print_info "Тест скорости скачивания через Cloudflare CDN (100MB)..."
+                curl -o /dev/null -w "Скорость скачивания: %{speed_download} байт/сек\nВремя: %{time_total} сек\n" https://speed.cloudflare.com/__down?bytes=104857600
+                ;;
+        esac
+    fi
+}
+
+# ============================================================
 # Валидация порта
 # ============================================================
 validate_port() {
@@ -247,6 +509,8 @@ install_remnanode() {
 
     check_docker
     tune_network_for_vpn
+    tune_nofile_limits
+    check_swap_auto
 
     # Запрос порта если не передан через CLI
     if [ -z "$NODE_PORT" ]; then
@@ -412,10 +676,13 @@ show_menu() {
         echo -e "  ${YELLOW}3)${NC} 🔄 Перезапустить RemnaNode"
         echo -e "  ${CYAN}4)${NC} ⬆️  Обновить образ до последней версии"
         echo -e "  ${RED}5)${NC} 🗑️  Удалить RemnaNode с сервера"
+        echo -e "  ${PURPLE}6)${NC} 💾 Управление Swap-файлом"
+        echo -e "  ${PURPLE}7)${NC} 🚀 Оптимизация ulimits (nofile 1048576)"
+        echo -e "  ${GREEN}8)${NC} ⚡ Тест скорости сети и диагностика IP"
         echo -e "  ${RED}0)${NC} 🚪 Выход"
         echo ""
 
-        read -p "Выберите действие [0-5]: " choice
+        read -p "Выберите действие [0-8]: " choice
         case $choice in
             1)
                 install_remnanode
@@ -435,6 +702,18 @@ show_menu() {
                 ;;
             5)
                 uninstall_remnanode
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            6)
+                manage_swap
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            7)
+                tune_nofile_limits
+                read -p "Нажмите Enter для продолжения..."
+                ;;
+            8)
+                run_speedtest
                 read -p "Нажмите Enter для продолжения..."
                 ;;
             0)
@@ -468,6 +747,9 @@ usage() {
     echo "  --restart            Перезапустить контейнер"
     echo "  --update             Обновить образ ноды"
     echo "  --uninstall          Удалить RemnaNode"
+    echo "  --swap [SIZE]        Создать Swap файл в GB (по умолчанию: 2)"
+    echo "  --tune               Оптимизировать лимиты дескрипторов (1048576) и BBR"
+    echo "  --speedtest          Запустить тест скорости сети и диагностику IP"
     echo "  -h, --help           Показать эту справку"
     echo ""
     echo "Пример быстрой установки:"
@@ -524,6 +806,25 @@ while [[ $# -gt 0 ]]; do
             ;;
         --uninstall)
             uninstall_remnanode
+            exit 0
+            ;;
+        --swap)
+            if [[ "$2" =~ ^[0-9]+$ ]]; then
+                create_swap "$2"
+                shift 2
+            else
+                create_swap 2
+                shift
+            fi
+            exit 0
+            ;;
+        --tune)
+            tune_network_for_vpn
+            tune_nofile_limits
+            exit 0
+            ;;
+        --speedtest)
+            run_speedtest
             exit 0
             ;;
         -h|--help)

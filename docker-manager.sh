@@ -511,6 +511,240 @@ manage_remnanode() {
 }
 
 # ============================================================
+# Управление Swap-файлом
+# ============================================================
+manage_swap() {
+    print_menu_title "💾 Управление файлом подкачки (Swap)"
+
+    local current_swap=$(free -m | awk '/^Swap:/ {print $2}')
+    current_swap=${current_swap:-0}
+    echo -e "Текущий размер Swap: ${CYAN}${current_swap} MB${NC}"
+    echo ""
+    echo "1) Создать Swap 2 GB (рекомендуется для 1-2 GB RAM)"
+    echo "2) Создать Swap 4 GB (рекомендуется для 2-4 GB RAM)"
+    echo "3) Задать свой размер в GB"
+    echo "4) Удалить Swap файл"
+    echo "0) Назад"
+    echo ""
+    read -p "Выберите действие [0-4]: " swap_choice
+
+    local swap_size=0
+    case $swap_choice in
+        1) swap_size=2 ;;
+        2) swap_size=4 ;;
+        3)
+            read -p "Введите размер Swap в GB (например 2 или 4): " custom_size
+            if [[ "$custom_size" =~ ^[1-9][0-9]*$ ]]; then
+                swap_size=$custom_size
+            else
+                print_error "Некорректный размер"
+                return 1
+            fi
+            ;;
+        4)
+            if [ -f /swapfile ]; then
+                print_info "Отключение и удаление /swapfile..."
+                swapoff /swapfile 2>/dev/null || true
+                rm -f /swapfile
+                sed -i '/\/swapfile/d' /etc/fstab
+                print_success "Swap файл успешно удалён!"
+            else
+                print_warning "Файл /swapfile не найден."
+            fi
+            return 0
+            ;;
+        0) return 0 ;;
+        *) print_error "Неверный выбор"; return 1 ;;
+    esac
+
+    if [ "$swap_size" -gt 0 ]; then
+        if [ -f /swapfile ]; then
+            print_warning "Файл /swapfile уже существует. Пересоздаём..."
+            swapoff /swapfile 2>/dev/null || true
+            rm -f /swapfile
+            sed -i '/\/swapfile/d' /etc/fstab
+        fi
+
+        print_info "Выделение ${swap_size}GB под /swapfile..."
+        if ! fallocate -l "${swap_size}G" /swapfile 2>/dev/null; then
+            dd if=/dev/zero of=/swapfile bs=1M count=$((swap_size * 1024)) status=progress
+        fi
+
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+
+        if ! grep -q "/swapfile" /etc/fstab; then
+            echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        fi
+
+        sysctl vm.swappiness=10 >/dev/null 2>&1 || true
+        sysctl vm.vfs_cache_pressure=50 >/dev/null 2>&1 || true
+
+        mkdir -p /etc/sysctl.d
+        cat > /etc/sysctl.d/99-swap.conf <<EOF
+vm.swappiness=10
+vm.vfs_cache_pressure=50
+EOF
+
+        print_success "Swap на ${swap_size}GB успешно создан и включён в автозагрузку!"
+    fi
+}
+
+# ============================================================
+# Оптимизация лимитов дескрипторов (nofile ulimits)
+# ============================================================
+tune_nofile_limits() {
+    print_menu_title "🚀 Оптимизация лимитов дескрипторов (nofile)"
+    local current_limit=$(ulimit -n)
+    print_info "Текущий лимит дескрипторов сессии: ${CYAN}${current_limit}${NC}"
+    print_info "Установка лимитов (1048576) для хоста, systemd и Docker..."
+
+    mkdir -p /etc/security/limits.d
+    cat > /etc/security/limits.d/99-vpn-limits.conf <<EOF
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+* soft nproc 524288
+* hard nproc 524288
+root soft nproc 524288
+root hard nproc 524288
+EOF
+
+    if [ -f /etc/systemd/system.conf ]; then
+        sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/system.conf
+        if ! grep -q "DefaultLimitNOFILE" /etc/systemd/system.conf; then
+            echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/system.conf
+        fi
+    fi
+    if [ -f /etc/systemd/user.conf ]; then
+        sed -i 's/^#*DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1048576/' /etc/systemd/user.conf
+        if ! grep -q "DefaultLimitNOFILE" /etc/systemd/user.conf; then
+            echo "DefaultLimitNOFILE=1048576" >> /etc/systemd/user.conf
+        fi
+    fi
+
+    cat > /etc/sysctl.d/99-file-max.conf <<EOF
+fs.file-max = 2097152
+fs.inotify.max_user_instances = 8192
+EOF
+    sysctl -p /etc/sysctl.d/99-file-max.conf >/dev/null 2>&1 || true
+
+    mkdir -p /etc/docker
+    if [ -f /etc/docker/daemon.json ]; then
+        if ! grep -q "default-ulimits" /etc/docker/daemon.json; then
+            cp /etc/docker/daemon.json /etc/docker/daemon.json.bak
+            sed -i '1s/{/{\n  "default-ulimits": {\n    "nofile": {\n      "Name": "nofile",\n      "Hard": 1048576,\n      "Soft": 1048576\n    }\n  },/' /etc/docker/daemon.json
+        fi
+    else
+        cat > /etc/docker/daemon.json <<EOF
+{
+  "default-ulimits": {
+    "nofile": {
+      "Name": "nofile",
+      "Hard": 1048576,
+      "Soft": 1048576
+    }
+  },
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "15m",
+    "max-file": "3"
+  }
+}
+EOF
+    fi
+
+    if command -v systemctl &> /dev/null; then
+        systemctl daemon-reload 2>/dev/null || true
+        systemctl restart docker 2>/dev/null || true
+    fi
+
+    ulimit -n 1048576 2>/dev/null || true
+    print_success "Лимиты дескрипторов увеличены до 1048576 (хост + Docker)!"
+}
+
+# ============================================================
+# Диагностика сети, локации и Speedtest
+# ============================================================
+run_speedtest() {
+    print_menu_title "🚀 Диагностика сети и тест скорости (Speedtest)"
+    
+    print_info "Определение параметров сервера и геолокации..."
+    local ip_info=$(curl -s --max-time 5 https://ipinfo.io/json 2>/dev/null || true)
+    
+    local ip="" country="" city="" org=""
+    if [ -n "$ip_info" ]; then
+        ip=$(echo "$ip_info" | grep '"ip"' | cut -d'"' -f4)
+        country=$(echo "$ip_info" | grep '"country"' | cut -d'"' -f4)
+        city=$(echo "$ip_info" | grep '"city"' | cut -d'"' -f4)
+        org=$(echo "$ip_info" | grep '"org"' | cut -d'"' -f4)
+    fi
+
+    if [ -z "$ip" ]; then
+        ip=$(curl -s --max-time 3 https://api.ipify.org 2>/dev/null || echo "Не удалось определить")
+    fi
+
+    echo -e "  ● Внешний IP:  ${CYAN}${ip}${NC}"
+    [ -n "$country" ] && echo -e "  ● Гео:         ${CYAN}${city}, ${country}${NC}"
+    [ -n "$org" ]     && echo -e "  ● Провайдер:   ${CYAN}${org}${NC}"
+    echo ""
+
+    print_info "Проверка задержки (Ping):"
+    for host in "1.1.1.1:Cloudflare" "8.8.8.8:Google DNS" "149.154.167.51:Telegram DC"; do
+        local ip_addr="${host%%:*}"
+        local name="${host##*:}"
+        local ping_res=$(ping -c 3 -W 2 "$ip_addr" 2>/dev/null | tail -1 | awk -F '/' '{print $5}')
+        if [ -n "$ping_res" ]; then
+            echo -e "  ● $name ($ip_addr): ${GREEN}${ping_res} ms${NC}"
+        else
+            echo -e "  ● $name ($ip_addr): ${YELLOW}не отвечает / тайм-аут${NC}"
+        fi
+    done
+    echo ""
+
+    print_info "Запуск теста скорости канала..."
+    if command -v speedtest &> /dev/null; then
+        speedtest --accept-license --accept-gdpr 2>/dev/null || speedtest
+    elif command -v speedtest-cli &> /dev/null; then
+        speedtest-cli --simple
+    else
+        print_info "Утилита Speedtest не установлена."
+        read -p "Установить официальный Ookla Speedtest CLI для точного замера? [Y/n]: " user_st
+        user_st=${user_st:-Y}
+
+        case ${user_st:0:1} in
+            y|Y)
+                print_info "Загрузка Ookla Speedtest..."
+                local arch=$(uname -m)
+                local st_url=""
+                case $arch in
+                    x86_64) st_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-x86_64.tgz" ;;
+                    aarch64|arm64) st_url="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-aarch64.tgz" ;;
+                esac
+                
+                if [ -n "$st_url" ]; then
+                    curl -sL "$st_url" | tar -xz -C /usr/local/bin speedtest 2>/dev/null || true
+                    chmod +x /usr/local/bin/speedtest 2>/dev/null || true
+                fi
+
+                if command -v speedtest &> /dev/null; then
+                    speedtest --accept-license --accept-gdpr
+                else
+                    print_info "Тест скорости скачивания через Cloudflare CDN (100MB)..."
+                    curl -o /dev/null -w "Скорость скачивания: %{speed_download} байт/сек\nВремя: %{time_total} сек\n" https://speed.cloudflare.com/__down?bytes=104857600
+                fi
+                ;;
+            *)
+                print_info "Тест скорости скачивания через Cloudflare CDN (100MB)..."
+                curl -o /dev/null -w "Скорость скачивания: %{speed_download} байт/сек\nВремя: %{time_total} сек\n" https://speed.cloudflare.com/__down?bytes=104857600
+                ;;
+        esac
+    fi
+}
+
+# ============================================================
 # Главное меню
 # ============================================================
 show_main_menu() {
@@ -550,10 +784,13 @@ show_main_menu() {
         echo -e "  ${BLUE}5)${NC} ⚙️  Дополнительные настройки"
         echo -e "  ${BLUE}6)${NC} 📊 Статистика Docker"
         echo -e "  ${PURPLE}7)${NC} 🌐 Управление RemnaNode (VPN)"
+        echo -e "  ${PURPLE}8)${NC} 💾 Управление Swap-файлом"
+        echo -e "  ${PURPLE}9)${NC} 🚀 Оптимизация ulimits (nofile 1048576)"
+        echo -e "  ${GREEN}10)${NC} ⚡ Тест скорости сети и диагностика IP"
         echo -e "  ${RED}0)${NC} 🚪 Выход"
         echo ""
         
-        read -p "Выберите действие [0-7]: " choice
+        read -p "Выберите действие [0-10]: " choice
         
         case $choice in
             1)
@@ -582,6 +819,18 @@ show_main_menu() {
                 ;;
             7)
                 manage_remnanode
+                read -p "Нажмите Enter чтобы продолжить..."
+                ;;
+            8)
+                manage_swap
+                read -p "Нажмите Enter чтобы продолжить..."
+                ;;
+            9)
+                tune_nofile_limits
+                read -p "Нажмите Enter чтобы продолжить..."
+                ;;
+            10)
+                run_speedtest
                 read -p "Нажмите Enter чтобы продолжить..."
                 ;;
             0)
@@ -625,6 +874,18 @@ handle_args() {
             manage_remnanode
             exit $?
             ;;
+        --swap)
+            manage_swap
+            exit 0
+            ;;
+        --tune)
+            tune_nofile_limits
+            exit 0
+            ;;
+        --speedtest)
+            run_speedtest
+            exit 0
+            ;;
         --help|-h)
             print_header
             echo "Использование: $0 [опция]"
@@ -635,6 +896,9 @@ handle_args() {
             echo "  -c, --check       Проверить установку"
             echo "  -t, --test        Полное тестирование"
             echo "  -r, --remnanode   Управление нодой RemnaNode (VPN)"
+            echo "  --swap            Управление Swap-файлом"
+            echo "  --tune            Оптимизация лимитов дескрипторов (nofile)"
+            echo "  --speedtest       Тест скорости сети и диагностика IP"
             echo "  -h, --help        Показать эту справку"
             echo ""
             echo "Без аргументов: интерактивное меню"

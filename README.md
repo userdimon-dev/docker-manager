@@ -57,6 +57,9 @@ sudo ./docker-manager.sh
 | `sudo ./docker-manager.sh -c` | Проверить установку |
 | `sudo ./docker-manager.sh -t` | Полное тестирование |
 | `sudo ./docker-manager.sh -r` | Управление RemnaNode (VPN) |
+| `sudo ./docker-manager.sh --swap` | Управление Swap-файлом |
+| `sudo ./docker-manager.sh --tune` | Оптимизация ulimits (1048576) и BBR |
+| `sudo ./docker-manager.sh --speedtest` | Тест скорости сети и диагностика IP |
 | `sudo ./docker-manager.sh -h` | Показать справку |
 
 ## 🎮 Интерактивное меню
@@ -85,9 +88,12 @@ sudo ./docker-manager.sh
   5) ⚙️  Дополнительные настройки
   6) 📊 Статистика Docker
   7) 🌐 Управление RemnaNode (VPN)
+  8) 💾 Управление Swap-файлом
+  9) 🚀 Оптимизация ulimits (nofile 1048576)
+  10) ⚡ Тест скорости сети и диагностика IP
   0) 🚪 Выход
 
-Выберите действие [0-7]: _
+Выберите действие [0-10]: _
 ```
 
 ## ⚙️ Дополнительные настройки
@@ -148,13 +154,19 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/userdimon-dev/docke
 | `--restart` | Перезапустить контейнер ноды |
 | `--update` | Обновить образ ноды до последней версии |
 | `--uninstall` | Полное удаление ноды с сервера |
+| `--swap [SIZE]` | Создать Swap-файл заданного размера в GB (по умолчанию 2GB) |
+| `--tune` | Оптимизировать лимиты файловых дескрипторов (1048576) и BBR |
+| `--speedtest` | Тест скорости сети (Ookla Speedtest / Cloudflare CDN) и геолокация IP |
 
 ### Что делает скрипт RemnaNode:
 1. Проверяет наличие Docker и Docker Compose (при отсутствии предлагает установить в 1 клик).
 2. Оптимизирует системные параметры ядра Linux для работы VPN (`net.ipv4.ip_forward = 1`, BBR, увеличенные сетевые буферы).
-3. Создаёт безопасный `docker-compose.yml` в `/opt/remnanode/` с режимом `network_mode: host` и ротацией логов.
-4. При наличии активного UFW фаервола открывает порт API только для IP вашей панели.
-5. Запускает контейнер `remnawave/node:latest` и выводит стартовые логи для проверки подключения.
+3. Увеличивает лимиты открытых дескрипторов (`nofile 1048576`) в хосте, `systemd` и Docker daemon, исключая ошибку `too many open files` при тысячах VPN-подключений.
+4. Проверяет наличие Swap и автоматически предлагает создать Swap на 2GB для VPS с малым объемом оперативной памяти (защита от OOM-Killer).
+5. Создаёт безопасный `docker-compose.yml` в `/opt/remnanode/` с режимом `network_mode: host` и ротацией логов.
+6. При наличии активного UFW фаервола открывает порт API только для IP вашей панели.
+7. Запускает контейнер `remnawave/node:latest` и выводит стартовые логи для проверки подключения.
+8. Предоставляет встроенный тест скорости канала и пинга до Cloudflare, Google DNS и Telegram DC.
 
 ## 📁 Структура проекта
 
